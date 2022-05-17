@@ -1,75 +1,89 @@
+use crate::tool::ensure_dir_exists;
 use dynamic_reload::{DynamicReload, Lib, PlatformName, Search, Symbol, UpdateState};
-use std::{sync::Arc, thread, time::Duration};
+pub use plugin_interface::{EmitContent, ListenContent, ListenType};
+use std::sync::Arc;
+use tauri::api::path::{cache_dir, data_dir};
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::time::{sleep, Duration};
+use self::plugin_store::Plugins;
 mod plugin_interface;
+mod plugin_store;
 
-struct Plugins {
-    plugins: Vec<Box<dyn plugin_interface::Plugin>>,
+pub struct Manager<'a> {
+    plugin_store: Plugins,
+    handler: DynamicReload,
+    e_sd: Arc<UnboundedSender<EmitContent<'a>>>,
+    l_sd: Arc<UnboundedSender<ListenContent<'a>>>,
 }
 
-fn get_service(plugin: &Arc<Lib>) -> Box<dyn plugin_interface::Plugin> {
-    unsafe {
-        plugin
-            .lib
-            .get::<Symbol<fn() -> Box<dyn plugin_interface::Plugin>>>(b"new")
-            .unwrap()()
-    }
-}
-
-impl Plugins {
-    fn load_plugin(&mut self, plugin: &Arc<Lib>) {
-        let service = get_service(&plugin);
-        service.load();
-        self.plugins.push(service);
-    }
-
-    fn unload_plugin(&mut self, plugin: &Arc<Lib>) {
-        let service = get_service(&plugin);
-        let id = service.id();
-        for i in (0..self.plugins.len()).rev() {
-            let plug = &self.plugins[i];
-            if plug.id() == id {
-                plug.unload();
-                self.plugins.swap_remove(i);
-            }
+impl<'a> Manager<'a> {
+    pub async fn new(
+        dir_name: &str,
+        e_sd: Arc<UnboundedSender<EmitContent<'a>>>,
+        l_sd: Arc<UnboundedSender<ListenContent<'a>>>,
+    ) -> Manager<'a> {
+        let mut plugin_install_path = data_dir().unwrap();
+        let mut cache_path = cache_dir().unwrap();
+        plugin_install_path.push(dir_name);
+        cache_path.push(dir_name);
+        ensure_dir_exists(&plugin_install_path).await;
+        ensure_dir_exists(&cache_path).await;
+        Self {
+            plugin_store: Plugins::new(),
+            handler: DynamicReload::new(
+                Some(vec![plugin_install_path.as_os_str().to_str().unwrap()]),
+                Some(cache_path.as_os_str().to_str().unwrap()),
+                Search::Default,
+                Duration::from_secs(2),
+            ),
+            e_sd,
+            l_sd,
         }
     }
 
-    // called when a lib needs to be reloaded.
-    fn reload_callback(&mut self, state: UpdateState, plugin: Option<&Arc<Lib>>) {
-        match state {
-            UpdateState::Before => Self::unload_plugin(self, plugin.unwrap()),
-            UpdateState::After => Self::load_plugin(self, plugin.unwrap()),
-            UpdateState::ReloadFailed(_) => println!("Failed to reload"),
+    // 热更新
+    pub async fn hot_reload(&mut self, sec: u64) {
+        unsafe {
+            loop {
+                // 拓展更新
+                self.handler.update(
+                    &|plugin_store: &mut Plugins, state, plugin| match state {
+                        UpdateState::Before => plugin_store.unload_plugin(plugin.unwrap()),
+                        UpdateState::After => {
+                            plugin_store.load_plugin(plugin.unwrap(), &self.e_sd, &self.l_sd)
+                        }
+                        UpdateState::ReloadFailed(_) => println!("Failed to reload"),
+                    },
+                    &mut self.plugin_store,
+                );
+
+                // todo 查看并与内存比对 index.json 列表 如果有不同则执行load/unload
+                sleep(Duration::from_millis(sec)).await;
+            }
+        };
+    }
+
+    fn load_plugin_by_name(&mut self, plugin_name: &str) {
+        unsafe {
+            match self.handler.add_library(plugin_name, PlatformName::Yes) {
+                Ok(lib) => self.plugin_store.load_plugin(&lib, &self.e_sd, &self.l_sd),
+                Err(e) => {
+                    println!("Unable to load dynamic lib, err {:?}", e);
+                    return;
+                }
+            };
         }
     }
-}
 
-fn main() {
-    let mut plugs = Plugins {
-        plugins: Vec::new(),
-    };
-    let mut reload_handler = DynamicReload::new(
-        Some(vec!["target/debug"]),
-        Some("target/debug"),
-        Search::Default,
-        Duration::from_secs(2),
-    );
-    unsafe {
-        match reload_handler.add_library("my_plugin", PlatformName::Yes) {
-            Ok(lib) => {
-                plugs.load_plugin(&lib);
-            }
-            Err(e) => {
-                println!("Unable to load dynamic lib, err {:?}", e);
-                return;
-            }
-        }
-
-        loop {
-            reload_handler.update(&Plugins::reload_callback, &mut plugs);
-
-            // Wait for 0.5 sec
-            thread::sleep(Duration::from_millis(500));
+    fn unload_plugin_by_name(&mut self, plugin_name: &str) {
+        unsafe {
+            match self.handler.add_library(plugin_name, PlatformName::Yes) {
+                Ok(lib) => self.plugin_store.unload_plugin(&lib),
+                Err(e) => {
+                    println!("Unable to load dynamic lib, err {:?}", e);
+                    return;
+                }
+            };
         }
     }
 }

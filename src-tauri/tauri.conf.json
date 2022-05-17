@@ -4,7 +4,8 @@
     "beforeBuildCommand": "npm run build:vite",
     "beforeDevCommand": "npm run dev:vite",
     "devPath": "http://localhost:3333",
-    "distDir": "../dist"
+    "distDir": "../dist",
+    "withGlobalTauri": true
   },
   "package": {
     "productName": "starry",
