@@ -3,15 +3,16 @@
     windows_subsystem = "windows"
 )]
 
-use plugin_manager::{EmitContent, ListenContent, ListenType};
+use extension_manager::{EmitContent, ListenContent, ListenType};
 use std::{collections::HashMap, sync::Arc};
 use tauri::{async_runtime::spawn, EventHandler, Manager, Result};
 use tokio::sync::mpsc::unbounded_channel;
-mod plugin_manager;
+mod extension_manager;
 mod tool;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    const DEV: bool = false;
     let (e_sd, mut e_rc) = unbounded_channel::<EmitContent>();
     let (l_sd, mut l_rc) = unbounded_channel::<ListenContent>();
     let mut event_handler_map: HashMap<&str, EventHandler> = HashMap::new();
@@ -25,13 +26,28 @@ async fn main() -> Result<()> {
                 let l_sender = Arc::new(l_sd);
                 // 拓展管理器
                 // 透传 emit & listen 发送端
-                let mut manager = plugin_manager::Manager::new(
+                let mut manager = extension_manager::Manager::new(
                     app_name.as_str(),
                     e_sender,
                     l_sender,
                 ).await;
-                // 启用热更新
-                manager.hot_reload(2000).await;
+
+                // todo 监听安装卸载事件
+                // l_sd.send(ListenContent {
+                //     event: "install_extension",
+                //     content_type: ListenType::Listen(Box::new(|x| {
+                //         manager.install_extension(x.payload().unwrap());
+                //     })),
+                // })
+                // .unwrap_err();
+                // l_sd.send(ListenContent {
+                //     event: "remove_extension",
+                //     content_type: ListenType::Listen(Box::new(|_x| {})),
+                // })
+                // .unwrap_err();
+               
+                // 开发模式启用模块热更新
+                if DEV {manager.hot_reload(2).await;}
             });
 
             Ok(())
