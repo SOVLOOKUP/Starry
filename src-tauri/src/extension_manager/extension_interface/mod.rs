@@ -18,8 +18,11 @@ pub struct ListenContent<'a> {
     pub content_type: ListenType,
 }
 
-pub type EmitSender<'a> = Arc<UnboundedSender<EmitContent<'a>>>;
-pub type ListenSender<'a> =Arc<UnboundedSender<ListenContent<'a>>>;
+pub type EmitSender<'a> = UnboundedSender<EmitContent<'a>>;
+pub type ListenSender<'a> = UnboundedSender<ListenContent<'a>>;
+
+pub type ArcEmitSender<'a> = Arc<EmitSender<'a>>;
+pub type ArcListenSender<'a> = Arc<ListenSender<'a>>;
 
 pub trait Extension: Send {
     // 拓展ID

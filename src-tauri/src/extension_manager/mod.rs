@@ -3,31 +3,43 @@ mod extension_store;
 
 use crate::tool::ensure_dir_exists;
 use dynamic_reload::{DynamicReload, PlatformName, Search, UpdateState};
+use extension_interface::{ArcEmitSender, ArcListenSender};
 pub use extension_interface::{EmitContent, ListenContent, ListenType};
-use extension_interface::{EmitSender, ListenSender};
 use extension_store::Extensions;
 use serde_json::{self, json, Value};
 use sled::{self, Db};
+use std::{collections::HashMap, sync::Arc};
 use std::{
-    io::Error,
     path::{Path, PathBuf},
     vec,
 };
 use tauri::api::path::{cache_dir, data_dir};
+use tauri::{async_runtime::spawn, AppHandle, EventHandler, Manager, Result};
+use tokio::sync::mpsc::unbounded_channel;
 use tokio::{
     fs::remove_file,
     time::{sleep, Duration},
 };
 
-pub struct Manager<'a> {
+#[derive(Debug)]
+enum ManagerEvent {
+    InstallExtension(String),
+    RemoveExtension(String),
+}
+
+pub struct ExtensionManager<'a> {
     extension_store: Extensions<'a>,
     handler: DynamicReload,
     db: Db,
     ext_install_path: PathBuf,
 }
 
-impl<'a> Manager<'a> {
-    pub async fn new(dir_name: &str, e_sd: EmitSender<'a>, l_sd: ListenSender<'a>) -> Manager<'a> {
+impl<'a> ExtensionManager<'a> {
+    pub async fn new(
+        dir_name: &str,
+        e_sd: ArcEmitSender<'a>,
+        l_sd: ArcListenSender<'a>,
+    ) -> ExtensionManager<'a> {
         let mut app_data_path = data_dir().unwrap();
         let mut cache_path = cache_dir().unwrap();
         app_data_path.push(dir_name);
@@ -120,14 +132,8 @@ impl<'a> Manager<'a> {
         }
     }
 
-    // fn setup_install_and_remove_event_loop(&mut self) {
-    //     self.send(ListenContent { event: "install_extension", content_type: ListenType::Listen(Box::new(|x| {})) });
-    //     l_sd.send(ListenContent { event: "remove_extension", content_type: ListenType::Listen(Box::new(|x| {})) });
-
-    // }
-
     // 从文件安装新插件
-    pub async fn install_extension(&mut self, extension_path: &str) -> Result<(), Error> {
+    pub async fn install_extension(&mut self, extension_path: &str) -> Result<()> {
         // 复制拓展库到目标文件夹
         tokio::fs::copy(
             extension_path,
@@ -142,14 +148,14 @@ impl<'a> Manager<'a> {
                 let mut v: Value = serde_json::from_str(info.as_str())?;
                 v["__file_name"] = json!(file_name);
                 // 将插件信息附加到内置数据库
-                self.db.insert(id, v.to_string().as_str())?;
+                self.db.insert(id, v.to_string().as_str()).unwrap();
             };
         };
         Ok(())
     }
 
     // 移除插件
-    pub async fn remove_extension(&mut self, id: &str) -> Result<(), Error> {
+    pub async fn remove_extension(&mut self, id: &str) -> Result<()> {
         // 关闭插件
         self.extension_store.unload_extension_by_id(id);
         // 从内置数据库删除插件信息
@@ -162,4 +168,98 @@ impl<'a> Manager<'a> {
         }
         Ok(())
     }
+}
+
+pub async fn start_manager(app: AppHandle) {
+    let app_name = app.package_info().name.clone();
+    let (e_sd, mut e_rc) = unbounded_channel::<EmitContent>();
+    let (l_sd, mut l_rc) = unbounded_channel::<ListenContent>();
+    let (m_sd, mut m_rc) = unbounded_channel::<ManagerEvent>();
+    let m_sd2 = m_sd.clone();
+
+    let mut event_handler_map: HashMap<&str, EventHandler> = HashMap::new();
+    let e_sender = Arc::new(e_sd);
+    let l_sender = Arc::new(l_sd);
+
+    // 拓展管理器
+    // 透传 emit & listen 发送端
+    let mut manager = ExtensionManager::new(app_name.as_str(), e_sender, l_sender).await;
+
+    // 监听安装卸载事件
+    app.listen_global("install_extension", move |event| {
+        if let Some(path) = event.payload() {
+            m_sd.send(ManagerEvent::InstallExtension(path.to_string()))
+                .expect("安装拓展失败！");
+        };
+    });
+
+    app.listen_global("remove_extension", move |event| {
+        if let Some(id) = event.payload() {
+            m_sd2
+                .send(ManagerEvent::RemoveExtension(id.to_string()))
+                .expect("移除拓展失败！");
+        };
+    });
+
+    let app_handle1 = app.clone();
+    let app_handle2 = app.clone();
+
+    let ext_event_emiter = spawn(async move {
+        while let Some(e_content) = e_rc.recv().await {
+            app_handle1
+                .emit_all(e_content.event, e_content.payload)
+                .expect(format!("[失败] 发送 {} 事件", e_content.event).as_str());
+            println!("[成功] 发送 {} 事件", e_content.event)
+        }
+    });
+
+    let ext_event_listener = spawn(async move {
+        while let Some(l_content) = l_rc.recv().await {
+            match l_content.content_type {
+                ListenType::Listen(handler) => {
+                    event_handler_map.insert(
+                        l_content.event,
+                        app_handle2.listen_global(l_content.event, handler),
+                    );
+                    println!("[成功] 监听 {} 事件", l_content.event)
+                }
+                ListenType::Unlisten => {
+                    if let Some(handler) = event_handler_map.remove(l_content.event) {
+                        app_handle2.unlisten(handler);
+                        println!("[成功] 删除 {} 事件", l_content.event)
+                    }
+                }
+            }
+        }
+    });
+
+    let manager_event_excuter = spawn(async move {
+        while let Some(m_content) = m_rc.recv().await {
+            match m_content {
+                ManagerEvent::InstallExtension(path) => {
+                    manager.install_extension(&path).await.unwrap();
+                    println!("[成功] 安装 {} 拓展", path)
+                }
+                ManagerEvent::RemoveExtension(id) => {
+                    manager.remove_extension(&id).await.unwrap();
+                    println!("[成功] 移除 {} 拓展", id)
+                }
+            }
+        }
+    });
+
+    // // 开发模式启用模块热更新
+    // spawn(async move {
+    //     if true {manager.hot_reload(2).await;}
+    // });
+
+    manager_event_excuter
+        .await
+        .expect("无法正常监听安装移除拓展事件！");
+    ext_event_listener
+        .await
+        .expect("无法正常挂载拓展事件监听器！");
+    ext_event_emiter
+        .await
+        .expect("无法正常挂载拓展事件广播器！");
 }

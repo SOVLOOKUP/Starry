@@ -1,16 +1,15 @@
-use super::{extension_interface::{EmitSender, ListenSender, Extension}, EmitContent};
+use super::{extension_interface::{ArcListenSender, Extension, ArcEmitSender}, EmitContent};
 use dynamic_reload::{Lib, Symbol};
 use std::{sync::Arc, collections::HashMap};
 
-
 pub struct Extensions<'a> {
-    running: HashMap<String, Box<dyn Extension>>,
-    e_sd: EmitSender<'a>,
-    l_sd: ListenSender<'a>,
+    running: HashMap<String, Box<dyn Extension + Send>>,
+    e_sd: ArcEmitSender<'a>,
+    l_sd: ArcListenSender<'a>,
 }
 
 impl<'a> Extensions<'a> {
-    pub fn new(e_sd: EmitSender<'a>, l_sd: ListenSender<'a>) -> Self {
+    pub fn new(e_sd: ArcEmitSender<'a>, l_sd: ArcListenSender<'a>) -> Self {
         Self {
             running: HashMap::new(),
             e_sd,
@@ -18,11 +17,11 @@ impl<'a> Extensions<'a> {
         }
     }
 
-    pub fn get_service(ext_lib: &Arc<Lib>) -> Box<dyn Extension> {
+    pub fn get_service(ext_lib: &Arc<Lib>) -> Box<dyn Extension + Send> {
         unsafe {
             ext_lib
                 .lib
-                .get::<Symbol<fn() -> Box<dyn Extension>>>(b"new")
+                .get::<Symbol<fn() -> Box<dyn Extension + Send>>>(b"new")
                 .unwrap()()
         }
     }
