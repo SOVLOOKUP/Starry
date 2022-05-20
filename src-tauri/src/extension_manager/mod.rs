@@ -16,10 +16,7 @@ use std::{
 use tauri::api::path::{cache_dir, data_dir};
 use tauri::{async_runtime::spawn, AppHandle, EventHandler, Manager, Result};
 use tokio::sync::mpsc::unbounded_channel;
-use tokio::{
-    fs::remove_file,
-    time::{sleep, Duration},
-};
+use tokio::{fs::remove_file, time::Duration};
 
 #[derive(Debug)]
 enum ManagerEvent {
@@ -96,27 +93,23 @@ impl<'a> ExtensionManager<'a> {
     }
 
     // 热更新
-    pub async fn hot_reload(&mut self, sec: u64) {
+    pub async fn try_hot_reload(&mut self) {
         unsafe {
-            loop {
-                // 更新拓展
-                self.handler.update(
-                    &|extension_store: &mut Extensions, state, ext_lib| match state {
-                        UpdateState::Before => {
-                            extension_store.unload_extension(ext_lib.unwrap());
-                            ()
-                        }
-                        UpdateState::After => {
-                            extension_store.load_extension(ext_lib.unwrap());
-                            ()
-                        }
-                        UpdateState::ReloadFailed(_) => println!("Failed to reload"),
-                    },
-                    &mut self.extension_store,
-                );
-                // 2秒运行间隔
-                sleep(Duration::from_secs(sec)).await;
-            }
+            // 更新拓展
+            self.handler.update(
+                &|extension_store: &mut Extensions, state, ext_lib| match state {
+                    UpdateState::Before => {
+                        extension_store.unload_extension(ext_lib.unwrap());
+                        ()
+                    }
+                    UpdateState::After => {
+                        extension_store.load_extension(ext_lib.unwrap());
+                        ()
+                    }
+                    UpdateState::ReloadFailed(_) => println!("Failed to reload"),
+                },
+                &mut self.extension_store,
+            );
         };
     }
 
@@ -247,11 +240,6 @@ pub async fn start_manager(app: AppHandle) {
             }
         }
     });
-
-    // // 开发模式启用模块热更新
-    // spawn(async move {
-    //     if true {manager.hot_reload(2).await;}
-    // });
 
     manager_event_excuter
         .await

@@ -8,6 +8,7 @@ pub struct EmitContent<'a> {
     pub payload: String,
 }
 
+#[allow(dead_code)]
 pub enum ListenType {
     Listen(Box<dyn Fn(Event) + Send>),
     Unlisten,
