@@ -3,8 +3,9 @@ use tauri::Event;
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug)]
-pub struct EmitContent<'a> {
-    pub event: &'a str,
+pub struct EmitContent {
+    pub id: String,
+    pub event: String,
     pub payload: String,
 }
 
@@ -14,16 +15,16 @@ pub enum ListenType {
     Unlisten,
 }
 
-pub struct ListenContent<'a> {
-    pub event: &'a str,
+pub struct ListenContent {
+    pub event: String,
     pub content_type: ListenType,
 }
 
-pub type EmitSender<'a> = UnboundedSender<EmitContent<'a>>;
-pub type ListenSender<'a> = UnboundedSender<ListenContent<'a>>;
+pub type EmitSender = UnboundedSender<EmitContent>;
+pub type ListenSender = UnboundedSender<ListenContent>;
 
-pub type ArcEmitSender<'a> = Arc<EmitSender<'a>>;
-pub type ArcListenSender<'a> = Arc<ListenSender<'a>>;
+pub type ArcEmitSender = Arc<EmitSender>;
+pub type ArcListenSender = Arc<ListenSender>;
 
 pub trait Extension: Send {
     // 拓展ID

@@ -1,8 +1,10 @@
+mod extension_error;
 mod extension_interface;
 mod extension_store;
 
 use crate::tool::ensure_dir_exists;
 use dynamic_reload::{DynamicReload, PlatformName, Search, UpdateState};
+use extension_error::Result;
 use extension_interface::{ArcEmitSender, ArcListenSender};
 pub use extension_interface::{EmitContent, ListenContent, ListenType};
 use extension_store::Extensions;
@@ -14,29 +16,52 @@ use std::{
     vec,
 };
 use tauri::api::path::{cache_dir, data_dir};
-use tauri::{async_runtime::spawn, AppHandle, EventHandler, Manager, Result};
+use tauri::{async_runtime::spawn, AppHandle, EventHandler, Manager};
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::{fs::remove_file, time::Duration};
 
+use self::{extension_error::CustomError, extension_store::Context};
+
 #[derive(Debug)]
-enum ManagerEvent {
-    InstallExtension(String),
-    RemoveExtension(String),
+struct EventContent {
+    id: String,
+    payload: String,
 }
 
-pub struct ExtensionManager<'a> {
-    extension_store: Extensions<'a>,
+#[derive(Debug)]
+enum ManagerEvent {
+    InstallExtension(EventContent),
+    RemoveExtension(EventContent),
+}
+
+fn new_manager_event(install_or_remove: bool, id: String, payload: &str) -> ManagerEvent {
+    if install_or_remove {
+        ManagerEvent::InstallExtension(EventContent {
+            id,
+            payload: payload.to_string(),
+        })
+    } else {
+        ManagerEvent::RemoveExtension(EventContent {
+            id,
+            payload: payload.to_string(),
+        })
+    }
+}
+
+pub struct ExtensionManager {
+    extension_store: Extensions,
     handler: DynamicReload,
     db: Db,
     ext_install_path: PathBuf,
+    e_sd: ArcEmitSender,
 }
 
-impl<'a> ExtensionManager<'a> {
+impl ExtensionManager {
     pub async fn new(
         dir_name: &str,
-        e_sd: ArcEmitSender<'a>,
-        l_sd: ArcListenSender<'a>,
-    ) -> ExtensionManager<'a> {
+        e_sd: ArcEmitSender,
+        l_sd: ArcListenSender,
+    ) -> ExtensionManager {
         let mut app_data_path = data_dir().unwrap();
         let mut cache_path = cache_dir().unwrap();
         app_data_path.push(dir_name);
@@ -65,7 +90,7 @@ impl<'a> ExtensionManager<'a> {
         let db = sled::open(&db_persist_path).unwrap();
 
         let mut manager = Self {
-            extension_store: Extensions::new(e_sd, l_sd),
+            extension_store: Extensions::new(e_sd.clone(), l_sd),
             handler: DynamicReload::new(
                 Some(vec![ext_install_path.as_os_str().to_str().unwrap()]),
                 Some(ext_cache_path.as_os_str().to_str().unwrap()),
@@ -74,6 +99,7 @@ impl<'a> ExtensionManager<'a> {
             ),
             db,
             ext_install_path,
+            e_sd,
         };
 
         // 获取安装的拓展并启动
@@ -84,7 +110,9 @@ impl<'a> ExtensionManager<'a> {
                         .unwrap();
                 if let Some(name) = info["__file_name"].as_str() {
                     // 从 info 中解析拓展文件名称并启动
-                    manager.load_extension_by_file_name(name);
+                    manager
+                        .load_extension_by_file_name(name, &Context::default())
+                        .unwrap();
                 };
             }
         }
@@ -99,11 +127,15 @@ impl<'a> ExtensionManager<'a> {
             self.handler.update(
                 &|extension_store: &mut Extensions, state, ext_lib| match state {
                     UpdateState::Before => {
-                        extension_store.unload_extension(ext_lib.unwrap());
+                        extension_store
+                            .unload_extension(ext_lib.unwrap(), &Context::default())
+                            .expect("failed to unload extension");
                         ()
                     }
                     UpdateState::After => {
-                        extension_store.load_extension(ext_lib.unwrap());
+                        extension_store
+                            .load_extension(ext_lib.unwrap(), &Context::default())
+                            .expect("failed to load extension");
                         ()
                     }
                     UpdateState::ReloadFailed(_) => println!("Failed to reload"),
@@ -113,44 +145,57 @@ impl<'a> ExtensionManager<'a> {
         };
     }
 
-    fn load_extension_by_file_name(&mut self, extension_name: &str) -> Option<(String, String)> {
+    fn load_extension_by_file_name(
+        &mut self,
+        extension_name: &str,
+        context: &Context,
+    ) -> extension_error::Result<(String, String)> {
         unsafe {
             match self.handler.add_library(extension_name, PlatformName::No) {
-                Ok(lib) => Some(self.extension_store.load_extension(&lib)),
-                Err(e) => {
-                    println!("Unable to load dynamic lib, err {:?}", e);
-                    return None;
-                }
+                Ok(lib) => self.extension_store.load_extension(&lib, context),
+                Err(e) => Err(extension_error::CustomError::LibLoadError(e)),
             }
         }
     }
 
     // 从文件安装新插件
-    pub async fn install_extension(&mut self, extension_path: &str) -> Result<()> {
+    pub async fn install_extension(
+        &mut self,
+        extension_path: &str,
+        context: Context,
+    ) -> Result<()> {
         // 复制拓展库到目标文件夹
         tokio::fs::copy(
             extension_path,
             self.ext_install_path.as_os_str().to_str().unwrap(),
         )
         .await?;
-        if let Some(file_name) = Path::new(extension_path).file_name() {
+        let extension_path = Path::new(extension_path);
+
+        if !extension_path.is_file() {
+            self.e_sd.send(EmitContent {
+                id: context.id,
+                event: "error".to_string(),
+                payload: "该路径不是一个文件".to_string(),
+            })?;
+        } else {
+            let file_name = extension_path.file_name().unwrap();
             // 启动插件
-            if let Some((id, info)) = self.load_extension_by_file_name(file_name.to_str().unwrap())
-            {
-                // 向 info 中添加文件名称字段
-                let mut v: Value = serde_json::from_str(info.as_str())?;
-                v["__file_name"] = json!(file_name);
-                // 将插件信息附加到内置数据库
-                self.db.insert(id, v.to_string().as_str()).unwrap();
-            };
+            let (id, info) =
+                self.load_extension_by_file_name(file_name.to_str().unwrap(), &context)?;
+            // 向 info 中添加文件名称字段
+            let mut v: Value = serde_json::from_str(info.as_str())?;
+            v["__file_name"] = json!(file_name);
+            // 将插件信息附加到内置数据库
+            self.db.insert(id, v.to_string().as_str()).unwrap();
         };
         Ok(())
     }
 
     // 移除插件
-    pub async fn remove_extension(&mut self, id: &str) -> Result<()> {
+    pub async fn remove_extension(&mut self, id: &str, context: Context) -> Result<()> {
         // 关闭插件
-        self.extension_store.unload_extension_by_id(id);
+        self.extension_store.unload_extension_by_id(id, &context)?;
         // 从内置数据库删除插件信息
         if let Ok(Some(info)) = self.db.remove(id) {
             if let Ok(info) = String::from_utf8(info.to_vec()) {
@@ -158,8 +203,10 @@ impl<'a> ExtensionManager<'a> {
                 // 从 info 中解析拓展文件名称从文件夹删除插件
                 remove_file(info["__file_name"].to_string()).await?;
             }
+            Ok(())
+        } else {
+            Err(CustomError::ExtRemoveError(format!("没有安装 id 为 {} 的拓展",id)))
         }
-        Ok(())
     }
 }
 
@@ -170,7 +217,7 @@ pub async fn start_manager(app: AppHandle) {
     let (m_sd, mut m_rc) = unbounded_channel::<ManagerEvent>();
     let m_sd2 = m_sd.clone();
 
-    let mut event_handler_map: HashMap<&str, EventHandler> = HashMap::new();
+    let mut event_handler_map: HashMap<String, EventHandler> = HashMap::new();
     let e_sender = Arc::new(e_sd);
     let l_sender = Arc::new(l_sd);
 
@@ -181,16 +228,16 @@ pub async fn start_manager(app: AppHandle) {
     // 监听安装卸载事件
     app.listen_global("install_extension", move |event| {
         if let Some(path) = event.payload() {
-            m_sd.send(ManagerEvent::InstallExtension(path.to_string()))
-                .expect("安装拓展失败！");
+            m_sd.send(new_manager_event(true, event.id().to_string(), path))
+                .unwrap();
         };
     });
 
     app.listen_global("remove_extension", move |event| {
         if let Some(id) = event.payload() {
             m_sd2
-                .send(ManagerEvent::RemoveExtension(id.to_string()))
-                .expect("移除拓展失败！");
+                .send(new_manager_event(false, event.id().to_string(), id))
+                .unwrap();
         };
     });
 
@@ -200,7 +247,7 @@ pub async fn start_manager(app: AppHandle) {
     let ext_event_emiter = spawn(async move {
         while let Some(e_content) = e_rc.recv().await {
             app_handle1
-                .emit_all(e_content.event, e_content.payload)
+                .emit_all(&e_content.event, e_content.payload)
                 .expect(format!("[失败] 发送 {} 事件", e_content.event).as_str());
             println!("[成功] 发送 {} 事件", e_content.event)
         }
@@ -210,14 +257,13 @@ pub async fn start_manager(app: AppHandle) {
         while let Some(l_content) = l_rc.recv().await {
             match l_content.content_type {
                 ListenType::Listen(handler) => {
-                    event_handler_map.insert(
-                        l_content.event,
-                        app_handle2.listen_global(l_content.event, handler),
-                    );
-                    println!("[成功] 监听 {} 事件", l_content.event)
+                    let k = l_content.event.clone();
+                    let v = app_handle2.listen_global(l_content.event, handler);
+                    println!("[成功] 监听 {} 事件", k);
+                    event_handler_map.insert(k, v);
                 }
                 ListenType::Unlisten => {
-                    if let Some(handler) = event_handler_map.remove(l_content.event) {
+                    if let Some(handler) = event_handler_map.remove(l_content.event.as_str()) {
                         app_handle2.unlisten(handler);
                         println!("[成功] 删除 {} 事件", l_content.event)
                     }
@@ -229,13 +275,55 @@ pub async fn start_manager(app: AppHandle) {
     let manager_event_excuter = spawn(async move {
         while let Some(m_content) = m_rc.recv().await {
             match m_content {
-                ManagerEvent::InstallExtension(path) => {
-                    manager.install_extension(&path).await.unwrap();
-                    println!("[成功] 安装 {} 拓展", path)
+                ManagerEvent::InstallExtension(content) => {
+                    let path = content.payload;
+                    match manager
+                        .install_extension(
+                            &path,
+                            Context {
+                                id: content.id.clone(),
+                            },
+                        )
+                        .await
+                    {
+                        Ok(_) => println!("[成功] 安装 {} 拓展", path),
+                        Err(e) => {
+                            println!("[失败] 安装 {} 拓展", path);
+                            manager
+                                .e_sd
+                                .send(EmitContent {
+                                    id: content.id,
+                                    event: "error".to_string(),
+                                    payload: e.to_string(),
+                                })
+                                .unwrap();
+                        }
+                    }
                 }
-                ManagerEvent::RemoveExtension(id) => {
-                    manager.remove_extension(&id).await.unwrap();
-                    println!("[成功] 移除 {} 拓展", id)
+                ManagerEvent::RemoveExtension(content) => {
+                    let id = content.payload;
+                    match manager
+                        .remove_extension(
+                            &id,
+                            Context {
+                                id: content.id.clone(),
+                            },
+                        )
+                        .await
+                    {
+                        Ok(_) => println!("[成功] 移除 {} 拓展", id),
+                        Err(e) => {
+                            println!("[失败] 移除 {} 拓展", id);
+                            manager
+                                .e_sd
+                                .send(EmitContent {
+                                    id: content.id,
+                                    event: "error".to_string(),
+                                    payload: e.to_string(),
+                                })
+                                .unwrap();
+                        }
+                    }
                 }
             }
         }

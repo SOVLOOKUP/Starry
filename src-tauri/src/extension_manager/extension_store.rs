@@ -1,15 +1,29 @@
-use super::{extension_interface::{ArcListenSender, Extension, ArcEmitSender}, EmitContent};
+use super::extension_error::{CustomError, Result};
+use super::{
+    extension_interface::{ArcEmitSender, ArcListenSender, Extension},
+    EmitContent,
+};
 use dynamic_reload::{Lib, Symbol};
-use std::{sync::Arc, collections::HashMap};
+use std::{collections::HashMap, sync::Arc};
 
-pub struct Extensions<'a> {
-    running: HashMap<String, Box<dyn Extension + Send>>,
-    e_sd: ArcEmitSender<'a>,
-    l_sd: ArcListenSender<'a>,
+pub struct Context {
+    pub id: String
 }
 
-impl<'a> Extensions<'a> {
-    pub fn new(e_sd: ArcEmitSender<'a>, l_sd: ArcListenSender<'a>) -> Self {
+impl Context {
+    pub fn default() -> Self {
+        Self { id: "".to_string() }
+    }
+}
+
+pub struct Extensions {
+    running: HashMap<String, Box<dyn Extension + Send>>,
+    e_sd: ArcEmitSender,
+    l_sd: ArcListenSender,
+}
+
+impl Extensions {
+    pub fn new(e_sd: ArcEmitSender, l_sd: ArcListenSender) -> Self {
         Self {
             running: HashMap::new(),
             e_sd,
@@ -17,53 +31,57 @@ impl<'a> Extensions<'a> {
         }
     }
 
-    pub fn get_service(ext_lib: &Arc<Lib>) -> Box<dyn Extension + Send> {
+    pub fn get_service(&mut self, ext_lib: &Arc<Lib>) -> Result<Box<dyn Extension + Send>> {
         unsafe {
-            ext_lib
+            match ext_lib
                 .lib
                 .get::<Symbol<fn() -> Box<dyn Extension + Send>>>(b"new")
-                .unwrap()()
+            {
+                Ok(new) => Ok(new()),
+                Err(e) => Err(CustomError::LibLoadError(dynamic_reload::Error::Load(e))),
+            }
         }
     }
 
-    pub fn load_extension(&mut self, ext_lib: &Arc<Lib>) -> (String, String) {
-        let service = Self::get_service(&ext_lib);
+    pub fn load_extension(
+        &mut self,
+        ext_lib: &Arc<Lib>,
+        context: &Context,
+    ) -> Result<(String, String)> {
+        let service = self.get_service(&ext_lib)?;
         let id = String::from(service.id());
         let info = String::from(service.info());
         let id_copy = id.clone();
         service.load(&self.e_sd, &self.l_sd);
         // 推送插件加载信息
         self.e_sd.send(EmitContent {
-            event: "installed_extension",
-            payload: format!(
-                "{{\"{}\":{}}}",
-                id,
-                info
-            ),
-        })
-        .unwrap();
+            id: context.id.clone(),
+            event: "installed_extension".to_string(),
+            payload: format!("{{\"{}\":{}}}", id, info),
+        })?;
         // 将插件加载到内存记录
         self.running.insert(id, service);
-        (id_copy, info)
+        Ok((id_copy, info))
     }
 
-    pub fn unload_extension_by_id(&mut self, ext_id: &str) {
+    pub fn unload_extension_by_id(&mut self, ext_id: &str, context: &Context) -> Result<()> {
         if let Some(service) = self.running.remove(ext_id) {
             service.unload();
             // 推送插件移除信息
             self.e_sd.send(EmitContent {
-                event: "remove_extension",
+                id: context.id.clone(),
+                event: "remove_extension".to_string(),
                 payload: ext_id.to_string(),
-            })
-            .unwrap();
+            })?;
         };
-    }   
-    
-    pub fn unload_extension(&mut self, ext_lib: &Arc<Lib>) -> String {
-        let service = Self::get_service(&ext_lib);
+        Ok(())
+    }
+
+    pub fn unload_extension(&mut self, ext_lib: &Arc<Lib>, context: &Context) -> Result<String> {
+        let service = self.get_service(&ext_lib)?;
         let id = service.id();
-        self.unload_extension_by_id(id);
+        self.unload_extension_by_id(id, context)?;
         let id = String::from(id);
-        id
-    }    
+        Ok(id)
+    }
 }
