@@ -7,7 +7,7 @@ use dynamic_reload::{Lib, Symbol};
 use std::{collections::HashMap, sync::Arc};
 
 pub struct Context {
-    pub id: String
+    pub id: String,
 }
 
 impl Context {
@@ -51,17 +51,17 @@ impl Extensions {
         let service = self.get_service(&ext_lib)?;
         let id = String::from(service.id());
         let info = String::from(service.info());
-        let id_copy = id.clone();
         service.load(&self.e_sd, &self.l_sd);
+        let payload = serde_json::to_string(&serde_json::json!({ id.clone(): info })).unwrap();
         // 推送插件加载信息
         self.e_sd.send(EmitContent {
             id: context.id.clone(),
-            event: "installed_extension".to_string(),
-            payload: format!("{{\"{}\":{}}}", id, info),
+            event: "loaded_extension".to_string(),
+            payload,
         })?;
         // 将插件加载到内存记录
-        self.running.insert(id, service);
-        Ok((id_copy, info))
+        self.running.insert(id.clone(), service);
+        Ok((id, info))
     }
 
     pub fn unload_extension_by_id(&mut self, ext_id: &str, context: &Context) -> Result<()> {
@@ -70,7 +70,7 @@ impl Extensions {
             // 推送插件移除信息
             self.e_sd.send(EmitContent {
                 id: context.id.clone(),
-                event: "remove_extension".to_string(),
+                event: "unloaded_extension".to_string(),
                 payload: ext_id.to_string(),
             })?;
         };
