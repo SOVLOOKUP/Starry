@@ -32,6 +32,7 @@ struct EventContent {
 enum ManagerEvent {
     InstallExtension(EventContent),
     RemoveExtension(EventContent),
+    ListAllExtension(EventContent),
 }
 
 fn new_manager_event(install_or_remove: bool, id: String, payload: &str) -> ManagerEvent {
@@ -205,8 +206,27 @@ impl ExtensionManager {
             }
             Ok(())
         } else {
-            Err(CustomError::ExtRemoveError(format!("没有安装 id 为 {} 的拓展",id)))
+            Err(CustomError::ExtRemoveError(format!(
+                "没有安装 id 为 {} 的拓展",
+                id
+            )))
         }
+    }
+
+    pub async fn list_all_extension(&mut self, context: Context) -> Result<()> {
+        for r in self.db.iter() {
+            if let Ok((id, info)) = r {
+                let info = String::from_utf8(info.to_vec()).unwrap();
+                let id = String::from_utf8(id.to_vec()).unwrap();
+                let payload = serde_json::to_string(&serde_json::json!({ id: info })).unwrap();
+                self.e_sd.send(EmitContent {
+                    id: context.id.clone(),
+                    event: "loaded_extension".to_string(),
+                    payload,
+                })?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -216,6 +236,7 @@ pub async fn start_manager(app: AppHandle) {
     let (l_sd, mut l_rc) = unbounded_channel::<ListenContent>();
     let (m_sd, mut m_rc) = unbounded_channel::<ManagerEvent>();
     let m_sd2 = m_sd.clone();
+    let m_sd3 = m_sd.clone();
 
     let mut event_handler_map: HashMap<String, EventHandler> = HashMap::new();
     let e_sender = Arc::new(e_sd);
@@ -237,6 +258,17 @@ pub async fn start_manager(app: AppHandle) {
         if let Some(id) = event.payload() {
             m_sd2
                 .send(new_manager_event(false, event.id().to_string(), id))
+                .unwrap();
+        };
+    });
+
+    app.listen_global("list_all_extension", move |event| {
+        if let Some(id) = event.payload() {
+            m_sd3
+                .send(ManagerEvent::ListAllExtension(EventContent {
+                    id: id.to_string(),
+                    payload: event.payload().unwrap().to_string(),
+                }))
                 .unwrap();
         };
     });
@@ -324,6 +356,14 @@ pub async fn start_manager(app: AppHandle) {
                                 .unwrap();
                         }
                     }
+                }
+                ManagerEvent::ListAllExtension(content) => {
+                    manager
+                        .list_all_extension(Context {
+                            id: content.id.clone(),
+                        })
+                        .await
+                        .unwrap();
                 }
             }
         }
