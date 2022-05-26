@@ -1,4 +1,4 @@
-use super::EmitContent;
+use starry_extension_interface::EmitContent;
 use std::fmt::{Display, Formatter};
 use std::result::Result as StdResult;
 use tokio::sync::mpsc::error::SendError;

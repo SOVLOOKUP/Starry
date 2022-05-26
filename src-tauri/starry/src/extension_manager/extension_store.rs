@@ -1,8 +1,6 @@
 use super::extension_error::{CustomError, Result};
-use super::{
-    extension_interface::{ArcEmitSender, ArcListenSender, Extension},
-    EmitContent,
-};
+use starry_extension_interface::{ArcEmitSender, ArcListenSender, Extension, EmitContent};
+
 use dynamic_reload::{Lib, Symbol};
 use std::{collections::HashMap, sync::Arc};
 

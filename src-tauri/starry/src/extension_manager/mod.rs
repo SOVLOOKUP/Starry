@@ -1,12 +1,10 @@
 mod extension_error;
-mod extension_interface;
 mod extension_store;
 
 use crate::tool::ensure_dir_exists;
 use dynamic_reload::{DynamicReload, PlatformName, Search, UpdateState};
 use extension_error::Result;
-use extension_interface::{ArcEmitSender, ArcListenSender};
-pub use extension_interface::{EmitContent, ListenContent, ListenType};
+use starry_extension_interface::{ArcEmitSender, ArcListenSender, EmitContent, ListenContent, ListenType};
 use extension_store::Extensions;
 use serde_json::{self, json, Value};
 use sled::{self, Db};

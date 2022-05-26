@@ -1,0 +1,15 @@
+[package]
+name = "starry_extension_interface"
+version = "0.0.1"
+description = "Starry extension interface"
+authors = ["sovlookup"]
+license = "MIT"
+homepage = "https://github.com/SOVLOOKUP/starry"
+repository = "https://github.com/SOVLOOKUP/starry"
+documentation = "https://github.com/SOVLOOKUP/starry"
+readme = "README.md"
+edition = "2021"
+
+[dependencies]
+tauri =  "1.0.0-rc.13" 
+tokio =  "1.18.2"
