@@ -2794,6 +2794,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "starry_extension_example"
+version = "0.0.1"
+dependencies = [
+ "starry_extension_interface",
+]
+
+[[package]]
 name = "starry_extension_interface"
 version = "0.0.1"
 dependencies = [
