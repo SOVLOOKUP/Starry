@@ -26,8 +26,8 @@ impl std::fmt::Debug for ListenContent {
     }
 }
 
-pub type EmitSender = UnboundedSender<EmitContent>;
-pub type ListenSender = UnboundedSender<ListenContent>;
+type EmitSender = UnboundedSender<EmitContent>;
+type ListenSender = UnboundedSender<ListenContent>;
 
 pub type ArcEmitSender = Arc<EmitSender>;
 pub type ArcListenSender = Arc<ListenSender>;
@@ -40,8 +40,8 @@ pub trait Extension: Send {
     // 拓展加载
     fn load(
         &self,
-        emit_sender: &EmitSender,
-        listen_sender: &ListenSender,
+        emit_sender: &ArcEmitSender,
+        listen_sender: &ArcListenSender,
     );
     // 拓展卸载
     fn unload(&self);

@@ -101,6 +101,7 @@ impl ExtensionManager {
             e_sd,
         };
 
+        manager.load_extension_by_file_name("example.dll",&Context::default()).unwrap();
         // 获取安装的拓展并启动
         for r in manager.db.iter() {
             if let Ok((_, info)) = r {
@@ -163,13 +164,9 @@ impl ExtensionManager {
         extension_path: &str,
         context: Context,
     ) -> Result<()> {
-        // 复制拓展库到目标文件夹
-        tokio::fs::copy(
-            extension_path,
-            self.ext_install_path.as_os_str().to_str().unwrap(),
-        )
-        .await?;
+        let mut new_ext_path = self.ext_install_path.clone();
         let extension_path = Path::new(extension_path);
+        new_ext_path.push(extension_path.file_name().unwrap());
 
         if !extension_path.is_file() {
             self.e_sd.send(EmitContent {
@@ -178,7 +175,15 @@ impl ExtensionManager {
                 payload: "该路径不是一个文件".to_string(),
             })?;
         } else {
-            let file_name = extension_path.file_name().unwrap();
+            // 复制拓展库到目标文件夹
+            tokio::fs::copy(
+                extension_path,
+                &new_ext_path,
+            )
+            .await?;
+
+            let file_name = new_ext_path.file_name().unwrap();
+            println!("{:?}", file_name);
             // 启动插件
             let (id, info) =
                 self.load_extension_by_file_name(file_name.to_str().unwrap(), &context)?;

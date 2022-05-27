@@ -47,9 +47,13 @@ impl Extensions {
         context: &Context,
     ) -> Result<(String, String)> {
         let service = self.get_service(&ext_lib)?;
+        println!("{}",1);
         let id = String::from(service.id());
+        println!("{}",2);
         let info = String::from(service.info());
+        println!("{}",3);
         service.load(&self.e_sd, &self.l_sd);
+        println!("{}",4);
         let payload = serde_json::to_string(&serde_json::json!({ id.clone(): info })).unwrap();
         // 推送插件加载信息
         self.e_sd.send(EmitContent {
