@@ -20,6 +20,12 @@ pub struct ListenContent {
     pub content_type: ListenType,
 }
 
+impl std::fmt::Debug for ListenContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ListenContent").field("event", &self.event).finish()
+    }
+}
+
 pub type EmitSender = UnboundedSender<EmitContent>;
 pub type ListenSender = UnboundedSender<ListenContent>;
 

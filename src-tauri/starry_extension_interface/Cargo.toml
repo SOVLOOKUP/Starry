@@ -1,6 +1,6 @@
 [package]
 name = "starry_extension_interface"
-version = "0.0.1"
+version = "0.0.2"
 description = "Starry extension interface"
 authors = ["sovlookup"]
 license = "MIT"
