@@ -32,7 +32,7 @@ type ListenSender = UnboundedSender<ListenContent>;
 pub type ArcEmitSender = Arc<EmitSender>;
 pub type ArcListenSender = Arc<ListenSender>;
 
-pub trait Extension: Send {
+pub trait Extension {
     // 拓展ID
     fn id(&self) -> &str;
     // 拓展信息 name
