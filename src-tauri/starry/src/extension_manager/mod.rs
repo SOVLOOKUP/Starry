@@ -101,7 +101,6 @@ impl ExtensionManager {
             e_sd,
         };
 
-        manager.load_extension_by_file_name("example.dll",&Context::default()).unwrap();
         // 获取安装的拓展并启动
         for r in manager.db.iter() {
             if let Ok((_, info)) = r {
@@ -183,7 +182,7 @@ impl ExtensionManager {
             .await?;
 
             let file_name = new_ext_path.file_name().unwrap();
-            println!("{:?}", file_name);
+            
             // 启动插件
             let (id, info) =
                 self.load_extension_by_file_name(file_name.to_str().unwrap(), &context)?;
